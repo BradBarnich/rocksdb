@@ -163,6 +163,17 @@ class DBIter final : public Iterator {
       return iter_.value();
     }
   }
+
+  Slice timestamp() const override {
+    auto ts_sz = user_comparator_.timestamp_size();
+    if (start_seqnum_ > 0 || ts_sz == 0) {
+      return Slice();
+    } else {
+      auto user_key = saved_key_.GetUserKey();
+      return Slice(user_key.data() + user_key.size() - ts_sz, ts_sz);
+    }
+  }
+
   Status status() const override {
     if (status_.ok()) {
       return iter_.status();
@@ -223,7 +234,7 @@ class DBIter final : public Iterator {
   // entry can be found within the prefix.
   void PrevInternal(const Slice* /*prefix*/);
   bool TooManyInternalKeysSkipped(bool increment = true);
-  bool IsVisible(SequenceNumber sequence);
+  bool IsVisible(ParsedInternalKey& key);
 
   // Temporarily pin the blocks that we encounter until ReleaseTempPinnedData()
   // is called
@@ -322,6 +333,7 @@ class DBIter final : public Iterator {
   // for diff snapshots we want the lower bound on the seqnum;
   // if this value > 0 iterator will return internal keys
   SequenceNumber start_seqnum_;
+  const Slice* timestamp_;
 };
 // Return a new iterator that converts internal keys (yielded by
 // "*internal_iter") that were live at the specified `sequence` number

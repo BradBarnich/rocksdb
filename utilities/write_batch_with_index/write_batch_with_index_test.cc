@@ -73,7 +73,7 @@ struct TestHandler : public WriteBatch::Handler {
     return Status::OK();
   }
 };
-}  // namespace anonymous
+}  // namespace
 
 class WriteBatchWithIndexTest : public testing::Test {};
 
@@ -275,14 +275,10 @@ void TestValueAsSecondaryIndexHelper(std::vector<Entry> entries,
 
 TEST_F(WriteBatchWithIndexTest, TestValueAsSecondaryIndex) {
   Entry entries[] = {
-      {"aaa", "0005", kPutRecord},
-      {"b", "0002", kPutRecord},
-      {"cdd", "0002", kMergeRecord},
-      {"aab", "00001", kPutRecord},
-      {"cc", "00005", kPutRecord},
-      {"cdd", "0002", kPutRecord},
-      {"aab", "0003", kPutRecord},
-      {"cc", "00005", kDeleteRecord},
+      {"aaa", "0005", kPutRecord},   {"b", "0002", kPutRecord},
+      {"cdd", "0002", kMergeRecord}, {"aab", "00001", kPutRecord},
+      {"cc", "00005", kPutRecord},   {"cdd", "0002", kPutRecord},
+      {"aab", "0003", kPutRecord},   {"cc", "00005", kDeleteRecord},
   };
   std::vector<Entry> entries_list(entries, entries + 8);
 
@@ -294,14 +290,10 @@ TEST_F(WriteBatchWithIndexTest, TestValueAsSecondaryIndex) {
   batch.Clear();
 
   Entry new_entries[] = {
-      {"aaa", "0005", kPutRecord},
-      {"e", "0002", kPutRecord},
-      {"add", "0002", kMergeRecord},
-      {"aab", "00001", kPutRecord},
-      {"zz", "00005", kPutRecord},
-      {"add", "0002", kPutRecord},
-      {"aab", "0003", kPutRecord},
-      {"zz", "00005", kDeleteRecord},
+      {"aaa", "0005", kPutRecord},   {"e", "0002", kPutRecord},
+      {"add", "0002", kMergeRecord}, {"aab", "00001", kPutRecord},
+      {"zz", "00005", kPutRecord},   {"add", "0002", kPutRecord},
+      {"aab", "0003", kPutRecord},   {"zz", "00005", kDeleteRecord},
   };
 
   entries_list = std::vector<Entry>(new_entries, new_entries + 8);
@@ -533,6 +525,7 @@ class KVIter : public Iterator {
 
   Slice key() const override { return iter_->first; }
   Slice value() const override { return iter_->second; }
+  Slice timestamp() const override { return Slice(); }
   Status status() const override { return Status::OK(); }
 
  private:
@@ -1410,8 +1403,7 @@ TEST_F(WriteBatchWithIndexTest, MutateWhileIteratingBaseCorrectnessTest) {
   map["ee"] = "ee";
   map["em"] = "me";
 
-  std::unique_ptr<Iterator> iter(
-      batch.NewIteratorWithBase(new KVIter(&map)));
+  std::unique_ptr<Iterator> iter(batch.NewIteratorWithBase(new KVIter(&map)));
   iter->Seek("k");
   AssertIterKey("k", iter.get());
   iter->Next();
@@ -1477,8 +1469,7 @@ TEST_F(WriteBatchWithIndexTest, MutateWhileIteratingBaseStressTest) {
     map[std::string(2, c)] = std::string(2, c);
   }
 
-  std::unique_ptr<Iterator> iter(
-      batch.NewIteratorWithBase(new KVIter(&map)));
+  std::unique_ptr<Iterator> iter(batch.NewIteratorWithBase(new KVIter(&map)));
 
   Random rnd(301);
   for (int i = 0; i < 1000000; ++i) {
@@ -1827,7 +1818,7 @@ TEST_F(WriteBatchWithIndexTest, SingleDeleteDeltaIterTest) {
   ASSERT_EQ("B:b3,E:ee,", value);
 }
 
-}  // namespace
+}  // namespace rocksdb
 
 int main(int argc, char** argv) {
   rocksdb::port::InstallStackTraceHandler();

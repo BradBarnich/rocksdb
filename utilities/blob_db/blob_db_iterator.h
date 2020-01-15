@@ -112,6 +112,11 @@ class BlobDBIterator : public Iterator {
     return value_;
   }
 
+  Slice timestamp() const override {
+    assert(Valid());
+    return Slice();
+  }
+
   // Iterator::Refresh() not supported.
 
  private:

@@ -59,6 +59,7 @@ class ArenaWrappedDBIter : public Iterator {
   virtual void Prev() override { db_iter_->Prev(); }
   virtual Slice key() const override { return db_iter_->key(); }
   virtual Slice value() const override { return db_iter_->value(); }
+  virtual Slice timestamp() const override { return db_iter_->timestamp(); }
   virtual Status status() const override { return db_iter_->status(); }
   bool IsBlob() const { return db_iter_->IsBlob(); }
 

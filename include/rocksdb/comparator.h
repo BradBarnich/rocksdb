@@ -104,6 +104,10 @@ class Comparator {
     return 0;
   }
 
+  virtual int CompareKey(const Slice& a, const Slice& b) const {
+    return Compare(a, b);
+  }
+
  private:
   size_t timestamp_size_;
 };

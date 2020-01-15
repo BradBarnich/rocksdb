@@ -54,6 +54,7 @@ class KVIter : public Iterator {
 
   Slice key() const override { return iter_->first; }
   Slice value() const override { return iter_->second; }
+  Slice timestamp() const override { return Slice(); }
   Status status() const override { return Status::OK(); }
 
  private:

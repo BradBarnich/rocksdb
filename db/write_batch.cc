@@ -237,7 +237,7 @@ class TimestampAssigner : public WriteBatch::Handler {
 };
 const std::vector<Slice> TimestampAssigner::kEmptyTimestampList;
 
-}  // anon namespace
+}  // namespace
 
 struct SavePoints {
   std::stack<SavePoint, autovector<SavePoint>> stack;
@@ -253,8 +253,9 @@ WriteBatch::WriteBatch(size_t reserved_bytes, size_t max_bytes)
 
 WriteBatch::WriteBatch(size_t reserved_bytes, size_t max_bytes, size_t ts_sz)
     : content_flags_(0), max_bytes_(max_bytes), rep_(), timestamp_size_(ts_sz) {
-  rep_.reserve((reserved_bytes > WriteBatchInternal::kHeader) ?
-    reserved_bytes : WriteBatchInternal::kHeader);
+  rep_.reserve((reserved_bytes > WriteBatchInternal::kHeader)
+                   ? reserved_bytes
+                   : WriteBatchInternal::kHeader);
   rep_.resize(WriteBatchInternal::kHeader);
 }
 
@@ -306,18 +307,16 @@ WriteBatch& WriteBatch::operator=(WriteBatch&& src) {
   return *this;
 }
 
-WriteBatch::~WriteBatch() { }
+WriteBatch::~WriteBatch() {}
 
-WriteBatch::Handler::~Handler() { }
+WriteBatch::Handler::~Handler() {}
 
 void WriteBatch::Handler::LogData(const Slice& /*blob*/) {
   // If the user has not specified something to do with blobs, then we ignore
   // them.
 }
 
-bool WriteBatch::Handler::Continue() {
-  return true;
-}
+bool WriteBatch::Handler::Continue() { return true; }
 
 void WriteBatch::Clear() {
   rep_.clear();
@@ -508,6 +507,7 @@ Status ReadRecordFromWriteBatch(Slice* input, char* tag,
     default:
       return Status::Corruption("unknown WriteBatch tag");
   }
+
   return Status::OK();
 }
 
@@ -908,7 +908,14 @@ Status WriteBatchInternal::Delete(WriteBatch* b, uint32_t column_family_id,
     b->rep_.push_back(static_cast<char>(kTypeColumnFamilyDeletion));
     PutVarint32(&b->rep_, column_family_id);
   }
-  PutLengthPrefixedSlice(&b->rep_, key);
+  if (0 == b->timestamp_size_) {
+    PutLengthPrefixedSlice(&b->rep_, key);
+  } else {
+    PutVarint32(&b->rep_,
+                static_cast<uint32_t>(key.size() + b->timestamp_size_));
+    b->rep_.append(key.data(), key.size());
+    b->rep_.append(b->timestamp_size_, '\0');
+  }
   b->content_flags_.store(b->content_flags_.load(std::memory_order_relaxed) |
                               ContentFlags::HAS_DELETE,
                           std::memory_order_relaxed);
@@ -930,7 +937,11 @@ Status WriteBatchInternal::Delete(WriteBatch* b, uint32_t column_family_id,
     b->rep_.push_back(static_cast<char>(kTypeColumnFamilyDeletion));
     PutVarint32(&b->rep_, column_family_id);
   }
-  PutLengthPrefixedSliceParts(&b->rep_, key);
+  if (0 == b->timestamp_size_) {
+    PutLengthPrefixedSliceParts(&b->rep_, key);
+  } else {
+    PutLengthPrefixedSlicePartsWithPadding(&b->rep_, key, b->timestamp_size_);
+  }
   b->content_flags_.store(b->content_flags_.load(std::memory_order_relaxed) |
                               ContentFlags::HAS_DELETE,
                           std::memory_order_relaxed);
@@ -954,7 +965,14 @@ Status WriteBatchInternal::SingleDelete(WriteBatch* b,
     b->rep_.push_back(static_cast<char>(kTypeColumnFamilySingleDeletion));
     PutVarint32(&b->rep_, column_family_id);
   }
-  PutLengthPrefixedSlice(&b->rep_, key);
+  if (0 == b->timestamp_size_) {
+    PutLengthPrefixedSlice(&b->rep_, key);
+  } else {
+    PutVarint32(&b->rep_,
+                static_cast<uint32_t>(key.size() + b->timestamp_size_));
+    b->rep_.append(key.data(), key.size());
+    b->rep_.append(b->timestamp_size_, '\0');
+  }
   b->content_flags_.store(b->content_flags_.load(std::memory_order_relaxed) |
                               ContentFlags::HAS_SINGLE_DELETE,
                           std::memory_order_relaxed);
@@ -978,7 +996,11 @@ Status WriteBatchInternal::SingleDelete(WriteBatch* b,
     b->rep_.push_back(static_cast<char>(kTypeColumnFamilySingleDeletion));
     PutVarint32(&b->rep_, column_family_id);
   }
-  PutLengthPrefixedSliceParts(&b->rep_, key);
+  if (0 == b->timestamp_size_) {
+    PutLengthPrefixedSliceParts(&b->rep_, key);
+  } else {
+    PutLengthPrefixedSlicePartsWithPadding(&b->rep_, key, b->timestamp_size_);
+  }
   b->content_flags_.store(b->content_flags_.load(std::memory_order_relaxed) |
                               ContentFlags::HAS_SINGLE_DELETE,
                           std::memory_order_relaxed);
@@ -1002,8 +1024,20 @@ Status WriteBatchInternal::DeleteRange(WriteBatch* b, uint32_t column_family_id,
     b->rep_.push_back(static_cast<char>(kTypeColumnFamilyRangeDeletion));
     PutVarint32(&b->rep_, column_family_id);
   }
-  PutLengthPrefixedSlice(&b->rep_, begin_key);
-  PutLengthPrefixedSlice(&b->rep_, end_key);
+
+  if (0 == b->timestamp_size_) {
+    PutLengthPrefixedSlice(&b->rep_, begin_key);
+    PutLengthPrefixedSlice(&b->rep_, end_key);
+  } else {
+    PutVarint32(&b->rep_,
+                static_cast<uint32_t>(begin_key.size() + b->timestamp_size_));
+    b->rep_.append(begin_key.data(), begin_key.size());
+    b->rep_.append(b->timestamp_size_, '\0');
+    PutVarint32(&b->rep_,
+                static_cast<uint32_t>(end_key.size() + b->timestamp_size_));
+    b->rep_.append(end_key.data(), end_key.size());
+    b->rep_.append(b->timestamp_size_, '\0');
+  }
   b->content_flags_.store(b->content_flags_.load(std::memory_order_relaxed) |
                               ContentFlags::HAS_DELETE_RANGE,
                           std::memory_order_relaxed);
@@ -1027,8 +1061,15 @@ Status WriteBatchInternal::DeleteRange(WriteBatch* b, uint32_t column_family_id,
     b->rep_.push_back(static_cast<char>(kTypeColumnFamilyRangeDeletion));
     PutVarint32(&b->rep_, column_family_id);
   }
-  PutLengthPrefixedSliceParts(&b->rep_, begin_key);
-  PutLengthPrefixedSliceParts(&b->rep_, end_key);
+  if (0 == b->timestamp_size_) {
+    PutLengthPrefixedSliceParts(&b->rep_, begin_key);
+    PutLengthPrefixedSliceParts(&b->rep_, end_key);
+  } else {
+    PutLengthPrefixedSlicePartsWithPadding(&b->rep_, begin_key,
+                                           b->timestamp_size_);
+    PutLengthPrefixedSlicePartsWithPadding(&b->rep_, end_key,
+                                           b->timestamp_size_);
+  }
   b->content_flags_.store(b->content_flags_.load(std::memory_order_relaxed) |
                               ContentFlags::HAS_DELETE_RANGE,
                           std::memory_order_relaxed);
@@ -1059,7 +1100,14 @@ Status WriteBatchInternal::Merge(WriteBatch* b, uint32_t column_family_id,
     b->rep_.push_back(static_cast<char>(kTypeColumnFamilyMerge));
     PutVarint32(&b->rep_, column_family_id);
   }
-  PutLengthPrefixedSlice(&b->rep_, key);
+  if (0 == b->timestamp_size_) {
+    PutLengthPrefixedSlice(&b->rep_, key);
+  } else {
+    PutVarint32(&b->rep_,
+                static_cast<uint32_t>(key.size() + b->timestamp_size_));
+    b->rep_.append(key.data(), key.size());
+    b->rep_.append(b->timestamp_size_, '\0');
+  }
   PutLengthPrefixedSlice(&b->rep_, value);
   b->content_flags_.store(b->content_flags_.load(std::memory_order_relaxed) |
                               ContentFlags::HAS_MERGE,
@@ -1089,7 +1137,11 @@ Status WriteBatchInternal::Merge(WriteBatch* b, uint32_t column_family_id,
     b->rep_.push_back(static_cast<char>(kTypeColumnFamilyMerge));
     PutVarint32(&b->rep_, column_family_id);
   }
-  PutLengthPrefixedSliceParts(&b->rep_, key);
+  if (0 == b->timestamp_size_) {
+    PutLengthPrefixedSliceParts(&b->rep_, key);
+  } else {
+    PutLengthPrefixedSlicePartsWithPadding(&b->rep_, key, b->timestamp_size_);
+  }
   PutLengthPrefixedSliceParts(&b->rep_, value);
   b->content_flags_.store(b->content_flags_.load(std::memory_order_relaxed) |
                               ContentFlags::HAS_MERGE,
@@ -1186,7 +1238,6 @@ Status WriteBatch::AssignTimestamps(const std::vector<Slice>& ts_list) {
 }
 
 class MemTableInserter : public WriteBatch::Handler {
-
   SequenceNumber sequence_;
   ColumnFamilyMemTables* const cf_mems_;
   FlushScheduler* const flush_scheduler_;
@@ -1197,7 +1248,7 @@ class MemTableInserter : public WriteBatch::Handler {
   uint64_t log_number_ref_;
   DBImpl* db_;
   const bool concurrent_memtable_writes_;
-  bool       post_info_created_;
+  bool post_info_created_;
 
   bool* has_valid_writes_;
   // On some (!) platforms just default creating
@@ -1221,8 +1272,8 @@ class MemTableInserter : public WriteBatch::Handler {
   // Whether this batch was unprepared or not
   bool unprepared_batch_;
   using DupDetector = std::aligned_storage<sizeof(DuplicateDetector)>::type;
-  DupDetector       duplicate_detector_;
-  bool              dup_dectector_on_;
+  DupDetector duplicate_detector_;
+  bool dup_dectector_on_;
 
   bool hint_per_batch_;
   bool hint_created_;
@@ -1242,7 +1293,7 @@ class MemTableInserter : public WriteBatch::Handler {
 
   MemPostInfoMap& GetPostMap() {
     assert(concurrent_memtable_writes_);
-    if(!post_info_created_) {
+    if (!post_info_created_) {
       new (&mem_post_info_map_) MemPostInfoMap();
       post_info_created_ = true;
     }
@@ -1256,8 +1307,8 @@ class MemTableInserter : public WriteBatch::Handler {
       new (&duplicate_detector_) DuplicateDetector(db_);
       dup_dectector_on_ = true;
     }
-    return reinterpret_cast<DuplicateDetector*>
-      (&duplicate_detector_)->IsDuplicateKeySeq(column_family_id, key, sequence_);
+    return reinterpret_cast<DuplicateDetector*>(&duplicate_detector_)
+        ->IsDuplicateKeySeq(column_family_id, key, sequence_);
   }
 
  protected:
@@ -1305,12 +1356,11 @@ class MemTableInserter : public WriteBatch::Handler {
 
   ~MemTableInserter() override {
     if (dup_dectector_on_) {
-      reinterpret_cast<DuplicateDetector*>
-        (&duplicate_detector_)->~DuplicateDetector();
+      reinterpret_cast<DuplicateDetector*>(&duplicate_detector_)
+          ->~DuplicateDetector();
     }
     if (post_info_created_) {
-      reinterpret_cast<MemPostInfoMap*>
-        (&mem_post_info_map_)->~MemPostInfoMap();
+      reinterpret_cast<MemPostInfoMap*>(&mem_post_info_map_)->~MemPostInfoMap();
     }
     if (hint_created_) {
       for (auto iter : GetHintMap()) {
@@ -1348,7 +1398,7 @@ class MemTableInserter : public WriteBatch::Handler {
     assert(concurrent_memtable_writes_);
     // If post info was not created there is nothing
     // to process and no need to create on demand
-    if(post_info_created_) {
+    if (post_info_created_) {
       for (auto& pair : GetPostMap()) {
         pair.first->BatchPostProcess(pair.second);
       }
@@ -1471,15 +1521,14 @@ class MemTableInserter : public WriteBatch::Handler {
         if (status == UpdateStatus::UPDATED_INPLACE) {
           // prev_value is updated in-place with final value.
           bool mem_res __attribute__((__unused__));
-          mem_res = mem->Add(
-              sequence_, value_type, key, Slice(prev_buffer, prev_size));
+          mem_res = mem->Add(sequence_, value_type, key,
+                             Slice(prev_buffer, prev_size));
           assert(mem_res);
           RecordTick(moptions->statistics, NUMBER_KEYS_WRITTEN);
         } else if (status == UpdateStatus::UPDATED) {
           // merged_value contains the final value.
           bool mem_res __attribute__((__unused__));
-          mem_res =
-              mem->Add(sequence_, value_type, key, Slice(merged_value));
+          mem_res = mem->Add(sequence_, value_type, key, Slice(merged_value));
           assert(mem_res);
           RecordTick(moptions->statistics, NUMBER_KEYS_WRITTEN);
         }

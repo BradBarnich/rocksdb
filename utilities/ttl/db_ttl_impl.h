@@ -23,7 +23,6 @@
 #undef GetCurrentTime
 #endif
 
-
 namespace rocksdb {
 
 class DBWithTTLImpl : public DBWithTTL {
@@ -100,7 +99,7 @@ class DBWithTTLImpl : public DBWithTTL {
 
   void SetTtl(int32_t ttl) override { SetTtl(DefaultColumnFamily(), ttl); }
 
-  void SetTtl(ColumnFamilyHandle *h, int32_t ttl) override;
+  void SetTtl(ColumnFamilyHandle* h, int32_t ttl) override;
 
  private:
   // remember whether the Close completes or not
@@ -108,7 +107,6 @@ class DBWithTTLImpl : public DBWithTTL {
 };
 
 class TtlIterator : public Iterator {
-
  public:
   explicit TtlIterator(Iterator* iter) : iter_(iter) { assert(iter_); }
 
@@ -130,7 +128,7 @@ class TtlIterator : public Iterator {
 
   Slice key() const override { return iter_->key(); }
 
-  int32_t timestamp() const {
+  int32_t ttl() const {
     return DecodeFixed32(iter_->value().data() + iter_->value().size() -
                          DBWithTTLImpl::kTSLength);
   }
@@ -143,6 +141,8 @@ class TtlIterator : public Iterator {
     return trimmed_value;
   }
 
+  Slice timestamp() const override { return Slice(); }
+
   Status status() const override { return iter_->status(); }
 
  private:
@@ -151,10 +151,10 @@ class TtlIterator : public Iterator {
 
 class TtlCompactionFilter : public CompactionFilter {
  public:
-  TtlCompactionFilter(
-      int32_t ttl, Env* env, const CompactionFilter* user_comp_filter,
-      std::unique_ptr<const CompactionFilter> user_comp_filter_from_factory =
-          nullptr)
+  TtlCompactionFilter(int32_t ttl, Env* env,
+                      const CompactionFilter* user_comp_filter,
+                      std::unique_ptr<const CompactionFilter>
+                          user_comp_filter_from_factory = nullptr)
       : ttl_(ttl),
         env_(env),
         user_comp_filter_(user_comp_filter),
@@ -168,8 +168,8 @@ class TtlCompactionFilter : public CompactionFilter {
   }
 
   virtual bool Filter(int level, const Slice& key, const Slice& old_val,
-                      std::string* new_val, bool* value_changed) const
-      override {
+                      std::string* new_val,
+                      bool* value_changed) const override {
     if (DBWithTTLImpl::IsStale(old_val, ttl_, env_)) {
       return true;
     }
@@ -220,9 +220,7 @@ class TtlCompactionFilterFactory : public CompactionFilterFactory {
         ttl_, env_, nullptr, std::move(user_comp_filter_from_factory)));
   }
 
-  void SetTtl(int32_t ttl) {
-    ttl_ = ttl;
-  }
+  void SetTtl(int32_t ttl) { ttl_ = ttl; }
 
   virtual const char* Name() const override {
     return "TtlCompactionFilterFactory";
@@ -235,7 +233,6 @@ class TtlCompactionFilterFactory : public CompactionFilterFactory {
 };
 
 class TtlMergeOperator : public MergeOperator {
-
  public:
   explicit TtlMergeOperator(const std::shared_ptr<MergeOperator>& merge_op,
                             Env* env)
@@ -313,8 +310,8 @@ class TtlMergeOperator : public MergeOperator {
 
   virtual bool PartialMergeMulti(const Slice& key,
                                  const std::deque<Slice>& operand_list,
-                                 std::string* new_value, Logger* logger) const
-      override {
+                                 std::string* new_value,
+                                 Logger* logger) const override {
     const uint32_t ts_len = DBWithTTLImpl::kTSLength;
     std::deque<Slice> operands_without_ts;
 
@@ -358,5 +355,5 @@ class TtlMergeOperator : public MergeOperator {
   std::shared_ptr<MergeOperator> user_merge_op_;
   Env* env_;
 };
-}
+}  // namespace rocksdb
 #endif  // ROCKSDB_LITE

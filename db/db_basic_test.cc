@@ -919,45 +919,45 @@ TEST_F(DBBasicTest, MmapAndBufferOptions) {
 #endif
 
 class TestEnv : public EnvWrapper {
-  public:
-   explicit TestEnv(Env* base_env) : EnvWrapper(base_env), close_count(0) {}
+ public:
+  explicit TestEnv(Env* base_env) : EnvWrapper(base_env), close_count(0) {}
 
-   class TestLogger : public Logger {
-    public:
-     using Logger::Logv;
-     explicit TestLogger(TestEnv* env_ptr) : Logger() { env = env_ptr; }
-     ~TestLogger() override {
-       if (!closed_) {
-         CloseHelper();
-       }
-     }
-     void Logv(const char* /*format*/, va_list /*ap*/) override {}
-
-    protected:
-     Status CloseImpl() override { return CloseHelper(); }
-
-    private:
-     Status CloseHelper() {
-       env->CloseCountInc();
-       ;
-       return Status::IOError();
-     }
-     TestEnv* env;
-   };
-
-    void CloseCountInc() { close_count++; }
-
-    int GetCloseCount() { return close_count; }
-
-    Status NewLogger(const std::string& /*fname*/,
-                     std::shared_ptr<Logger>* result) override {
-      result->reset(new TestLogger(this));
-      return Status::OK();
+  class TestLogger : public Logger {
+   public:
+    using Logger::Logv;
+    explicit TestLogger(TestEnv* env_ptr) : Logger() { env = env_ptr; }
+    ~TestLogger() override {
+      if (!closed_) {
+        CloseHelper();
+      }
     }
+    void Logv(const char* /*format*/, va_list /*ap*/) override {}
+
+   protected:
+    Status CloseImpl() override { return CloseHelper(); }
 
    private:
-    int close_count;
-};
+    Status CloseHelper() {
+      env->CloseCountInc();
+      ;
+      return Status::IOError();
+    }
+    TestEnv* env;
+  };
+
+  void CloseCountInc() { close_count++; }
+
+  int GetCloseCount() { return close_count; }
+
+  Status NewLogger(const std::string& /*fname*/,
+                   std::shared_ptr<Logger>* result) override {
+    result->reset(new TestLogger(this));
+    return Status::OK();
+  }
+
+ private:
+  int close_count;
+};  // namespace rocksdb
 
 TEST_F(DBBasicTest, DBClose) {
   Options options = GetDefaultOptions();
@@ -1008,7 +1008,7 @@ TEST_F(DBBasicTest, DBCloseFlushError) {
   Options options = GetDefaultOptions();
   options.create_if_missing = true;
   options.manual_wal_flush = true;
-  options.write_buffer_size=100;
+  options.write_buffer_size = 100;
   options.env = fault_injection_env.get();
 
   Reopen(options);
@@ -1611,8 +1611,7 @@ TEST_F(DBBasicTest, MultiGetIOBufferOverrun) {
   BlockBasedTableOptions table_options;
   table_options.pin_l0_filter_and_index_blocks_in_cache = true;
   table_options.block_size = 16 * 1024;
-  assert(table_options.block_size >
-          BlockBasedTable::kMultiGetReadStackBufSize);
+  assert(table_options.block_size > BlockBasedTable::kMultiGetReadStackBufSize);
   options.table_factory.reset(new BlockBasedTableFactory(table_options));
   Reopen(options);
 
@@ -1686,7 +1685,7 @@ class DBBasicTestWithParallelIO
     if (!Snappy_Supported()) {
       compression_enabled_ = false;
     }
-#endif //ROCKSDB_LITE
+#endif  // ROCKSDB_LITE
 
     table_options.block_cache = uncompressed_cache_;
     if (table_options.block_cache == nullptr) {
@@ -2011,15 +2010,15 @@ TEST_P(DBBasicTestWithParallelIO, MultiGet) {
   }
 }
 
-INSTANTIATE_TEST_CASE_P(
-    ParallelIO, DBBasicTestWithParallelIO,
-    // Params are as follows -
-    // Param 0 - Compressed cache enabled
-    // Param 1 - Uncompressed cache enabled
-    // Param 2 - Data compression enabled
-    // Param 3 - ReadOptions::fill_cache
-    ::testing::Combine(::testing::Bool(), ::testing::Bool(),
-                       ::testing::Bool(), ::testing::Bool()));
+INSTANTIATE_TEST_CASE_P(ParallelIO, DBBasicTestWithParallelIO,
+                        // Params are as follows -
+                        // Param 0 - Compressed cache enabled
+                        // Param 1 - Uncompressed cache enabled
+                        // Param 2 - Data compression enabled
+                        // Param 3 - ReadOptions::fill_cache
+                        ::testing::Combine(::testing::Bool(), ::testing::Bool(),
+                                           ::testing::Bool(),
+                                           ::testing::Bool()));
 
 class DBBasicTestWithTimestampBase : public DBTestBase {
  public:
@@ -2097,7 +2096,7 @@ class DBBasicTestWithTimestampBase : public DBTestBase {
     PutFixed64(ts, low);
     PutFixed64(ts, high);
     assert(ts->size() == sizeof(low) + sizeof(high));
-    return Slice(*ts);
+    return Slice(ts->data(), ts->size());
   }
 };
 
@@ -2232,7 +2231,67 @@ TEST_F(DBBasicTestWithTimestamp, PutAndGetWithCompaction) {
       }
     }
   };
+
+  const auto& verify_db_iter_func = [&]() {
+    for (size_t i = 0; i != kNumTimestamps; ++i) {
+      ReadOptions ropts;
+      ropts.timestamp = &read_ts_list[i];
+      for (int cf = 0; cf != static_cast<int>(num_cfs); ++cf) {
+        ColumnFamilyHandle* cfh = handles_[cf];
+        for (size_t j = 0; j != (kNumKeysPerFile - 1) / kNumTimestamps; ++j) {
+          std::string value;
+          std::unique_ptr<Iterator> iter(db_->NewIterator(ropts, cfh));
+          auto key = "key" + std::to_string(j);
+          iter->Seek(key);
+          ASSERT_TRUE(iter->Valid());
+          value = iter->value().ToString();
+          ASSERT_EQ("value_" + std::to_string(j) + "_" + std::to_string(i),
+                    value);
+        }
+      }
+    }
+  };
+
+  const auto& db_iter_nearest = [&]() {
+    ReadOptions ropts;
+    std::string readKey;
+    Slice readTs = EncodeTimestamp(ULLONG_MAX, ULLONG_MAX, &readKey);
+    ropts.timestamp = &readTs;
+
+    ColumnFamilyHandle* cfh = handles_[0];
+    for (size_t j = 0; j != (kNumKeysPerFile - 1) / kNumTimestamps; ++j) {
+      std::string value;
+      std::unique_ptr<Iterator> iter(db_->NewIterator(ropts, cfh));
+      auto key = "key" + std::to_string(j);
+      iter->Seek(key);
+      ASSERT_TRUE(iter->Valid());
+      value = iter->value().ToString();
+      ASSERT_EQ("value_" + std::to_string(j) + "_" +
+                    std::to_string(kNumTimestamps - 1),
+                value);
+    }
+  };
+
+  const auto& db_iter_first = [&]() {
+    ReadOptions ropts;
+    std::string readKey;
+    Slice readTs = EncodeTimestamp(0, 0, &readKey);
+    ropts.timestamp = &readTs;
+
+    ColumnFamilyHandle* cfh = handles_[0];
+    for (size_t j = 0; j != (kNumKeysPerFile - 1) / kNumTimestamps; ++j) {
+      std::unique_ptr<Iterator> iter(db_->NewIterator(ropts, cfh));
+      iter->SeekToFirst();
+      auto value = iter->value().ToString();
+      ASSERT_TRUE(iter->Valid());
+      ASSERT_EQ("value_0_0", value);
+    }
+  };
+
   verify_db_func();
+  verify_db_iter_func();
+  db_iter_nearest();
+  db_iter_first();
 }
 #endif  // !ROCKSDB_LITE
 
@@ -2256,6 +2315,10 @@ class DBBasicTestWithTimestampWithParam
     }
 
     int CompareImpl(const Slice& a, const Slice& b) const override {
+      return cmp_without_ts_->Compare(a, b);
+    }
+
+    int CompareKey(const Slice& a, const Slice& b) const override {
       return cmp_without_ts_->Compare(a, b);
     }
   };

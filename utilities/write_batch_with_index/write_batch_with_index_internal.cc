@@ -82,6 +82,7 @@ Status ReadableWriteBatch::GetEntryFromDataOffset(size_t data_offset,
       return Status::Corruption("unknown WriteBatch tag ",
                                 ToString(static_cast<unsigned int>(tag)));
   }
+
   return Status::OK();
 }
 
@@ -145,9 +146,9 @@ int WriteBatchEntryComparator::CompareKey(uint32_t column_family,
                                           const Slice& key2) const {
   if (column_family < cf_comparators_.size() &&
       cf_comparators_[column_family] != nullptr) {
-    return cf_comparators_[column_family]->Compare(key1, key2);
+    return cf_comparators_[column_family]->CompareKey(key1, key2);
   } else {
-    return default_comparator_->Compare(key1, key2);
+    return default_comparator_->CompareKey(key1, key2);
   }
 }
 

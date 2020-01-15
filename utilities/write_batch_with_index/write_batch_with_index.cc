@@ -162,6 +162,11 @@ class BaseDeltaIterator : public Iterator {
                             : delta_iterator_->Entry().value;
   }
 
+  Slice timestamp() const override {
+    assert(false);
+    return Slice();
+  }
+
   Status status() const override {
     if (!status_.ok()) {
       return status_;
@@ -204,8 +209,8 @@ class BaseDeltaIterator : public Iterator {
     // we don't support those yet
     assert(delta_iterator_->Entry().type != kMergeRecord &&
            delta_iterator_->Entry().type != kLogDataRecord);
-    int compare = comparator_->Compare(delta_iterator_->Entry().key,
-                                       base_iterator_->key());
+    int compare = comparator_->CompareKey(delta_iterator_->Entry().key,
+                                          base_iterator_->key());
     if (forward_) {
       // current_at_base -> compare < 0
       assert(!current_at_base_ || compare < 0);
@@ -303,7 +308,7 @@ class BaseDeltaIterator : public Iterator {
       } else {
         int compare =
             (forward_ ? 1 : -1) *
-            comparator_->Compare(delta_entry.key, base_iterator_->key());
+            comparator_->CompareKey(delta_entry.key, base_iterator_->key());
         if (compare <= 0) {  // delta bigger or equal
           if (compare == 0) {
             equal_keys_ = true;
@@ -346,10 +351,11 @@ class WBWIIteratorImpl : public WBWIIterator {
  public:
   WBWIIteratorImpl(uint32_t column_family_id,
                    WriteBatchEntrySkipList* skip_list,
-                   const ReadableWriteBatch* write_batch)
+                   const ReadableWriteBatch* write_batch, size_t timestamp_size)
       : column_family_id_(column_family_id),
         skip_list_iter_(skip_list),
-        write_batch_(write_batch) {}
+        write_batch_(write_batch),
+        timestamp_size_(timestamp_size) {}
 
   ~WBWIIteratorImpl() override {}
 
@@ -382,14 +388,34 @@ class WBWIIteratorImpl : public WBWIIterator {
   }
 
   void Seek(const Slice& key) override {
-    WriteBatchIndexEntry search_entry(&key, column_family_id_,
+    Slice keySlice;
+    std::string keyString;
+    if (timestamp_size_ > 0) {
+      keyString = std::string(key.data(), key.size());
+      keyString.append(timestamp_size_, '\0');
+      keySlice = Slice(keyString);
+    } else {
+      keySlice = key;
+    }
+
+    WriteBatchIndexEntry search_entry(&keySlice, column_family_id_,
                                       true /* is_forward_direction */,
                                       false /* is_seek_to_first */);
     skip_list_iter_.Seek(&search_entry);
   }
 
   void SeekForPrev(const Slice& key) override {
-    WriteBatchIndexEntry search_entry(&key, column_family_id_,
+    Slice keySlice;
+    std::string keyString;
+    if (timestamp_size_ > 0) {
+      keyString = std::string(key.data(), key.size());
+      keyString.append(timestamp_size_, '\0');
+      keySlice = Slice(keyString);
+    } else {
+      keySlice = key;
+    }
+
+    WriteBatchIndexEntry search_entry(&keySlice, column_family_id_,
                                       false /* is_forward_direction */,
                                       false /* is_seek_to_first */);
     skip_list_iter_.SeekForPrev(&search_entry);
@@ -412,6 +438,10 @@ class WBWIIteratorImpl : public WBWIIterator {
     assert(ret.type == kPutRecord || ret.type == kDeleteRecord ||
            ret.type == kSingleDeleteRecord || ret.type == kDeleteRangeRecord ||
            ret.type == kMergeRecord);
+
+    // this probably isn't right, since the result can't be passed to the
+    // comparer
+    ret.key.remove_suffix(timestamp_size_);
     return ret;
   }
 
@@ -429,18 +459,21 @@ class WBWIIteratorImpl : public WBWIIterator {
   uint32_t column_family_id_;
   WriteBatchEntrySkipList::Iterator skip_list_iter_;
   const ReadableWriteBatch* write_batch_;
+  size_t timestamp_size_;
 };
 
 struct WriteBatchWithIndex::Rep {
   explicit Rep(const Comparator* index_comparator, size_t reserved_bytes = 0,
-               size_t max_bytes = 0, bool _overwrite_key = false)
-      : write_batch(reserved_bytes, max_bytes),
+               size_t max_bytes = 0, bool _overwrite_key = false,
+               size_t ts_sz = 0)
+      : write_batch(reserved_bytes, max_bytes, ts_sz),
         comparator(index_comparator, &write_batch),
         skip_list(comparator, &arena),
         overwrite_key(_overwrite_key),
         last_entry_offset(0),
         last_sub_batch_offset(0),
-        sub_batch_cnt(1) {}
+        sub_batch_cnt(1),
+        timestamp_size(ts_sz) {}
   ReadableWriteBatch write_batch;
   WriteBatchEntryComparator comparator;
   Arena arena;
@@ -453,6 +486,8 @@ struct WriteBatchWithIndex::Rep {
   size_t last_sub_batch_offset;
   // Total number of sub-batches in the write batch. Default is 1.
   size_t sub_batch_cnt;
+
+  size_t timestamp_size;
 
   // Remember current offset of internal write batch, which is used as
   // the starting offset of the next record.
@@ -494,7 +529,8 @@ bool WriteBatchWithIndex::Rep::UpdateExistingEntryWithCfId(
     return false;
   }
 
-  WBWIIteratorImpl iter(column_family_id, &skip_list, &write_batch);
+  WBWIIteratorImpl iter(column_family_id, &skip_list, &write_batch,
+                        timestamp_size);
   iter.Seek(key);
   if (!iter.Valid()) {
     return false;
@@ -537,14 +573,13 @@ void WriteBatchWithIndex::Rep::AddNewEntry(uint32_t column_family_id) {
   // Extract key
   Slice key;
   bool success __attribute__((__unused__));
-  success =
-      ReadKeyFromWriteBatchEntry(&entry_ptr, &key, column_family_id != 0);
+  success = ReadKeyFromWriteBatchEntry(&entry_ptr, &key, column_family_id != 0);
   assert(success);
 
   auto* mem = arena.Allocate(sizeof(WriteBatchIndexEntry));
   auto* index_entry =
       new (mem) WriteBatchIndexEntry(last_entry_offset, column_family_id,
-                                      key.data() - wb_data.data(), key.size());
+                                     key.data() - wb_data.data(), key.size());
   skip_list.Insert(index_entry);
 }
 
@@ -588,8 +623,8 @@ Status WriteBatchWithIndex::Rep::ReBuildIndex() {
     // set offset of current entry for call to AddNewEntry()
     last_entry_offset = input.data() - write_batch.Data().data();
 
-    s = ReadRecordFromWriteBatch(&input, &tag, &column_family_id, &key,
-                                  &value, &blob, &xid);
+    s = ReadRecordFromWriteBatch(&input, &tag, &column_family_id, &key, &value,
+                                 &blob, &xid);
     if (!s.ok()) {
       break;
     }
@@ -632,9 +667,9 @@ Status WriteBatchWithIndex::Rep::ReBuildIndex() {
 
 WriteBatchWithIndex::WriteBatchWithIndex(
     const Comparator* default_index_comparator, size_t reserved_bytes,
-    bool overwrite_key, size_t max_bytes)
+    bool overwrite_key, size_t max_bytes, size_t ts_sz)
     : rep(new Rep(default_index_comparator, reserved_bytes, max_bytes,
-                  overwrite_key)) {}
+                  overwrite_key, ts_sz)) {}
 
 WriteBatchWithIndex::~WriteBatchWithIndex() {}
 
@@ -648,13 +683,15 @@ WriteBatch* WriteBatchWithIndex::GetWriteBatch() { return &rep->write_batch; }
 size_t WriteBatchWithIndex::SubBatchCnt() { return rep->sub_batch_cnt; }
 
 WBWIIterator* WriteBatchWithIndex::NewIterator() {
-  return new WBWIIteratorImpl(0, &(rep->skip_list), &rep->write_batch);
+  return new WBWIIteratorImpl(0, &(rep->skip_list), &rep->write_batch,
+                              rep->timestamp_size);
 }
 
 WBWIIterator* WriteBatchWithIndex::NewIterator(
     ColumnFamilyHandle* column_family) {
   return new WBWIIteratorImpl(GetColumnFamilyID(column_family),
-                              &(rep->skip_list), &rep->write_batch);
+                              &(rep->skip_list), &rep->write_batch,
+                              rep->timestamp_size);
 }
 
 Iterator* WriteBatchWithIndex::NewIteratorWithBase(

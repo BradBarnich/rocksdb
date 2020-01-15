@@ -145,6 +145,17 @@ void DumpSupportInfo(Logger* logger) {
 }
 }  // namespace
 
+class SnapshotReadCallback : public ReadCallback {
+ public:
+  SnapshotReadCallback(SequenceNumber snapshot) : ReadCallback(snapshot) {}
+
+  // Will be called to see if the seq number visible; if not it moves on to
+  // the next seq number.
+  inline virtual bool IsVisibleFullCheck(SequenceNumber seq) override {
+    return seq <= max_visible_seq_;
+  }
+};
+
 DBImpl::DBImpl(const DBOptions& options, const std::string& dbname,
                const bool seq_per_batch, const bool batch_per_txn)
     : dbname_(dbname),
@@ -1055,7 +1066,7 @@ Status DBImpl::SetDBOptions(
       file_options_for_compaction_ = fs_->OptimizeForCompactionTableWrite(
           file_options_for_compaction_, immutable_db_options_);
       versions_->ChangeFileOptions(mutable_db_options_);
-      //TODO(xiez): clarify why apply optimize for read to write options
+      // TODO(xiez): clarify why apply optimize for read to write options
       file_options_for_compaction_ = fs_->OptimizeForCompactionTableRead(
           file_options_for_compaction_, immutable_db_options_);
       file_options_for_compaction_.compaction_readahead_size =
@@ -1451,7 +1462,7 @@ InternalIterator* DBImpl::NewInternalIterator(const ReadOptions& read_options,
     IterState* cleanup =
         new IterState(this, &mutex_, super_version,
                       read_options.background_purge_on_iterator_cleanup ||
-                      immutable_db_options_.avoid_unnecessary_blocking_io);
+                          immutable_db_options_.avoid_unnecessary_blocking_io);
     internal_iter->RegisterCleanup(CleanupIteratorState, cleanup, nullptr);
 
     return internal_iter;
@@ -1506,6 +1517,7 @@ Status DBImpl::GetImpl(const ReadOptions& read_options, const Slice& key,
   TEST_SYNC_POINT("DBImpl::GetImpl:2");
 
   SequenceNumber snapshot;
+  std::unique_ptr<ReadCallback> callback;
   if (read_options.snapshot != nullptr) {
     if (get_impl_options.callback) {
       // Already calculated based on read_options.snapshot
@@ -1513,6 +1525,13 @@ Status DBImpl::GetImpl(const ReadOptions& read_options, const Slice& key,
     } else {
       snapshot =
           reinterpret_cast<const SnapshotImpl*>(read_options.snapshot)->number_;
+
+      if (cfd->user_comparator()->timestamp_size() > 0) {
+        // Seek might not skip sequence numbers when the timestamps between
+        // the stored and the seek key are different, so we need a callback.
+        callback.reset(new SnapshotReadCallback(snapshot));
+        get_impl_options.callback = callback.get();
+      }
     }
   } else {
     // Note that the snapshot is assigned AFTER referencing the super
@@ -2921,8 +2940,7 @@ SuperVersion* DBImpl::GetAndRefSuperVersion(uint32_t column_family_id) {
 void DBImpl::CleanupSuperVersion(SuperVersion* sv) {
   // Release SuperVersion
   if (sv->Unref()) {
-    bool defer_purge =
-            immutable_db_options().avoid_unnecessary_blocking_io;
+    bool defer_purge = immutable_db_options().avoid_unnecessary_blocking_io;
     {
       InstrumentedMutexLock l(&mutex_);
       sv->Cleanup();
@@ -4333,8 +4351,7 @@ Status DBImpl::VerifyChecksum(const ReadOptions& read_options) {
       break;
     }
   }
-  bool defer_purge =
-          immutable_db_options().avoid_unnecessary_blocking_io;
+  bool defer_purge = immutable_db_options().avoid_unnecessary_blocking_io;
   {
     InstrumentedMutexLock l(&mutex_);
     for (auto sv : sv_list) {

@@ -68,9 +68,7 @@ typedef BlockBasedTable::IndexReader IndexReader;
 // experiments, for auto readahead. Experiment data is in PR #3282.
 const size_t BlockBasedTable::kMaxAutoReadaheadSize = 256 * 1024;
 
-BlockBasedTable::~BlockBasedTable() {
-  delete rep_;
-}
+BlockBasedTable::~BlockBasedTable() { delete rep_; }
 
 std::atomic<uint64_t> BlockBasedTable::next_cache_key_id_(0);
 
@@ -2697,10 +2695,25 @@ bool BlockBasedTable::PrefixMayMatch(
   if (filter != nullptr) {
     if (!filter->IsBlockBased()) {
       const Slice* const const_ikey_ptr = &internal_key;
-      may_match = filter->RangeMayExist(
-          read_options.iterate_upper_bound, user_key, prefix_extractor,
-          rep_->internal_comparator.user_comparator(), const_ikey_ptr,
-          &filter_checked, need_upper_bound_check, lookup_context);
+      if (read_options.timestamp == nullptr ||
+          read_options.iterate_upper_bound == nullptr) {
+        may_match = filter->RangeMayExist(
+            read_options.iterate_upper_bound, user_key, prefix_extractor,
+            rep_->internal_comparator.user_comparator(), const_ikey_ptr,
+            &filter_checked, need_upper_bound_check, lookup_context);
+      } else {
+        std::string upper_bound_buf(read_options.iterate_upper_bound->data(),
+                                    read_options.iterate_upper_bound->size());
+        upper_bound_buf.append(read_options.timestamp->data(),
+                               read_options.timestamp->size());
+
+        Slice upper_bound(upper_bound_buf.data(), upper_bound_buf.size());
+        may_match = filter->RangeMayExist(
+            &upper_bound, user_key, prefix_extractor,
+            rep_->internal_comparator.user_comparator(), const_ikey_ptr,
+            &filter_checked, need_upper_bound_check, lookup_context);
+      }
+
     } else {
       // if prefix_extractor changed for block based filter, skip filter
       if (need_upper_bound_check) {
@@ -3103,12 +3116,22 @@ void BlockBasedTableIterator<TBlockIter, TValue>::FindBlockForward() {
       return;
     }
     // Whether next data block is out of upper bound, if there is one.
+    Slice upper_bound;
+    std::string upper_bound_with_ts;
+    if (read_options_.iterate_upper_bound != nullptr) {
+      upper_bound = *read_options_.iterate_upper_bound;
+      if (read_options_.timestamp != nullptr) {
+        upper_bound_with_ts.assign(upper_bound.data(), upper_bound.size());
+        upper_bound_with_ts.append(read_options_.timestamp->data(),
+                                   read_options_.timestamp->size());
+        upper_bound = Slice(upper_bound_with_ts);
+      }
+    }
     const bool next_block_is_out_of_bound =
         read_options_.iterate_upper_bound != nullptr &&
         block_iter_points_to_real_block_ && !data_block_within_upper_bound_;
     assert(!next_block_is_out_of_bound ||
-           user_comparator_.Compare(*read_options_.iterate_upper_bound,
-                                    index_iter_->user_key()) <= 0);
+           user_comparator_.Compare(upper_bound, index_iter_->user_key()) <= 0);
     ResetDataIter();
     index_iter_->Next();
     if (next_block_is_out_of_bound) {
@@ -3167,8 +3190,16 @@ void BlockBasedTableIterator<TBlockIter, TValue>::FindKeyBackward() {
 template <class TBlockIter, typename TValue>
 void BlockBasedTableIterator<TBlockIter, TValue>::CheckOutOfBound() {
   if (read_options_.iterate_upper_bound != nullptr && Valid()) {
-    is_out_of_bound_ = user_comparator_.Compare(
-                           *read_options_.iterate_upper_bound, user_key()) <= 0;
+    Slice upper_bound = *read_options_.iterate_upper_bound;
+    std::string upper_bound_with_ts;
+    if (read_options_.timestamp != nullptr) {
+      upper_bound_with_ts.assign(upper_bound.data(), upper_bound.size());
+      upper_bound_with_ts.append(read_options_.timestamp->data(),
+                                 read_options_.timestamp->size());
+      upper_bound = Slice(upper_bound_with_ts);
+    }
+
+    is_out_of_bound_ = user_comparator_.Compare(upper_bound, user_key()) <= 0;
   }
 }
 
@@ -3177,9 +3208,17 @@ void BlockBasedTableIterator<TBlockIter,
                              TValue>::CheckDataBlockWithinUpperBound() {
   if (read_options_.iterate_upper_bound != nullptr &&
       block_iter_points_to_real_block_) {
+    Slice upper_bound = *read_options_.iterate_upper_bound;
+    std::string upper_bound_with_ts;
+    if (read_options_.timestamp != nullptr) {
+      upper_bound_with_ts.assign(upper_bound.data(), upper_bound.size());
+      upper_bound_with_ts.append(read_options_.timestamp->data(),
+                                 read_options_.timestamp->size());
+      upper_bound = Slice(upper_bound_with_ts);
+    }
+
     data_block_within_upper_bound_ =
-        (user_comparator_.Compare(*read_options_.iterate_upper_bound,
-                                  index_iter_->user_key()) > 0);
+        (user_comparator_.Compare(upper_bound, index_iter_->user_key()) > 0);
   }
 }
 

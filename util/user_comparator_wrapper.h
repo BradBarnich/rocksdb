@@ -19,7 +19,7 @@ class UserComparatorWrapper final : public Comparator {
  public:
   explicit UserComparatorWrapper(const Comparator* const user_cmp)
       : user_comparator_(user_cmp) {}
-  
+
   ~UserComparatorWrapper() = default;
 
   const Comparator* user_comparator() const { return user_comparator_; }
@@ -56,6 +56,22 @@ class UserComparatorWrapper final : public Comparator {
 
   bool CanKeysWithDifferentByteContentsBeEqual() const override {
     return user_comparator_->CanKeysWithDifferentByteContentsBeEqual();
+  }
+
+  int CompareTimestamp(const Slice& a, const Slice& b) const override {
+    return user_comparator_->CompareTimestamp(a, b);
+  }
+
+  int CompareWithoutTimestamp(const Slice& a, const Slice& b) const override {
+    return user_comparator_->CompareWithoutTimestamp(a, b);
+  }
+
+  int CompareKey(const Slice& a, const Slice& b) const override {
+    return user_comparator_->CompareKey(a, b);
+  }
+
+  inline size_t timestamp_size() const {
+    return user_comparator_->timestamp_size();
   }
 
  private:

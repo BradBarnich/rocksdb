@@ -56,7 +56,7 @@ class IteratorWrapperBase {
   }
 
   // Iterator interface methods
-  bool Valid() const        { return valid_; }
+  bool Valid() const { return valid_; }
   Slice key() const {
     assert(Valid());
     return result_.key;
@@ -65,14 +65,25 @@ class IteratorWrapperBase {
     assert(Valid());
     return iter_->value();
   }
+  TValue timestamp() const {
+    assert(Valid());
+    return iter_->timestamp();
+  }
   // Methods below require iter() != nullptr
-  Status status() const     { assert(iter_); return iter_->status(); }
+  Status status() const {
+    assert(iter_);
+    return iter_->status();
+  }
   void Next() {
     assert(iter_);
     valid_ = iter_->NextAndGetResult(&result_);
     assert(!valid_ || iter_->status().ok());
   }
-  void Prev()               { assert(iter_); iter_->Prev();        Update(); }
+  void Prev() {
+    assert(iter_);
+    iter_->Prev();
+    Update();
+  }
   void Seek(const Slice& k) {
     assert(iter_);
     iter_->Seek(k);
@@ -83,8 +94,16 @@ class IteratorWrapperBase {
     iter_->SeekForPrev(k);
     Update();
   }
-  void SeekToFirst()        { assert(iter_); iter_->SeekToFirst(); Update(); }
-  void SeekToLast()         { assert(iter_); iter_->SeekToLast();  Update(); }
+  void SeekToFirst() {
+    assert(iter_);
+    iter_->SeekToFirst();
+    Update();
+  }
+  void SeekToLast() {
+    assert(iter_);
+    iter_->SeekToLast();
+    Update();
+  }
 
   bool MayBeOutOfLowerBound() {
     assert(Valid());
