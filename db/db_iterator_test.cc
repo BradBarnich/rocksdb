@@ -2989,7 +2989,416 @@ TEST_F(DBIteratorWithReadCallbackTest, ReadCallback) {
   delete iter;
 }
 
-}  // namespace ROCKSDB_NAMESPACE
+class DBIteratorWithTimestampTest : public DBIteratorTest {
+ protected:
+   class TestComparator : public Comparator {
+   private:
+    const Comparator* cmp_without_ts_;
+
+   public:
+    explicit TestComparator(size_t ts_sz)
+        : Comparator(ts_sz), cmp_without_ts_(nullptr) {
+      cmp_without_ts_ = BytewiseComparator();
+    }
+
+    const char* Name() const override { return "TestComparator"; }
+
+    void FindShortSuccessor(std::string*) const override {}
+
+    void FindShortestSeparator(std::string*, const Slice&) const override {}
+
+    int Compare(const Slice& a, const Slice& b) const override {
+      int r = CompareWithoutTimestamp(a, b);
+      if (r != 0 || 0 == timestamp_size()) {
+        return r;
+      }
+      return -CompareTimestamp(
+          Slice(a.data() + a.size() - timestamp_size(), timestamp_size()),
+          Slice(b.data() + b.size() - timestamp_size(), timestamp_size()));
+    }
+
+    using Comparator::CompareWithoutTimestamp;
+    int CompareWithoutTimestamp(const Slice& a, bool a_has_ts, const Slice& b,
+                                bool b_has_ts) const override {
+      if (a_has_ts) {
+        assert(a.size() >= timestamp_size());
+      }
+      if (b_has_ts) {
+        assert(b.size() >= timestamp_size());
+      }
+      Slice lhs = a_has_ts ? StripTimestampFromUserKey(a, timestamp_size()) : a;
+      Slice rhs = b_has_ts ? StripTimestampFromUserKey(b, timestamp_size()) : b;
+      return cmp_without_ts_->Compare(lhs, rhs);
+    }
+
+    int CompareTimestamp(const Slice& ts1, const Slice& ts2) const override {
+      if (!ts1.data() && !ts2.data()) {
+        return 0;
+      } else if (ts1.data() && !ts2.data()) {
+        return 1;
+      } else if (!ts1.data() && ts2.data()) {
+        return -1;
+      }
+      assert(ts1.size() == ts2.size());
+      uint64_t low1 = 0;
+      uint64_t low2 = 0;
+      uint64_t high1 = 0;
+      uint64_t high2 = 0;
+      const size_t kSize = ts1.size();
+      std::unique_ptr<char[]> ts1_buf(new char[kSize]);
+      memcpy(ts1_buf.get(), ts1.data(), ts1.size());
+      std::unique_ptr<char[]> ts2_buf(new char[kSize]);
+      memcpy(ts2_buf.get(), ts2.data(), ts2.size());
+      Slice ts1_copy = Slice(ts1_buf.get(), kSize);
+      Slice ts2_copy = Slice(ts2_buf.get(), kSize);
+      auto* ptr1 = const_cast<Slice*>(&ts1_copy);
+      auto* ptr2 = const_cast<Slice*>(&ts2_copy);
+      if (!GetFixed64(ptr1, &low1) || !GetFixed64(ptr1, &high1) ||
+          !GetFixed64(ptr2, &low2) || !GetFixed64(ptr2, &high2)) {
+        assert(false);
+      }
+      if (high1 < high2) {
+        return -1;
+      } else if (high1 > high2) {
+        return 1;
+      }
+      if (low1 < low2) {
+        return -1;
+      } else if (low1 > low2) {
+        return 1;
+      }
+      return 0;
+    }
+  };
+
+  void EncodeTimestamp(uint64_t low, uint64_t high, std::string* ts) {
+    assert(nullptr != ts);
+    ts->clear();
+    PutFixed64(ts, low);
+    PutFixed64(ts, high);
+    assert(ts->size() == sizeof(low) + sizeof(high));
+  }
+};
+
+TEST_F(DBIteratorWithTimestampTest, Timestamps) {
+  Options options = CurrentOptions();
+  std::string tmp;
+  EncodeTimestamp(0, 0, &tmp);
+  size_t ts_sz = tmp.size();
+  TestComparator test_cmp(ts_sz);
+  options.comparator = &test_cmp;
+  Reopen(options);
+
+  std::string writeTimestamp;
+  EncodeTimestamp(0, 0, &writeTimestamp);
+  rocksdb::Slice writeTimestampSlice =
+      Slice(writeTimestamp.data(), writeTimestamp.size());
+  WriteOptions wopts;
+  wopts.timestamp = &writeTimestampSlice;
+
+  EncodeTimestamp(0, 1, &writeTimestamp);
+  ASSERT_OK(Put("foo", "v1", wopts));
+  EncodeTimestamp(0, 2, &writeTimestamp);
+  ASSERT_OK(Put("foo", "v2", wopts));
+  EncodeTimestamp(0, 3, &writeTimestamp);
+  ASSERT_OK(Put("foo", "v3", wopts));
+  ASSERT_OK(Put("z", "vx", wopts));
+  EncodeTimestamp(0, 4, &writeTimestamp);
+  ASSERT_OK(Put("a", "va", wopts));
+  ASSERT_OK(Put("z", "vz", wopts));
+
+  EncodeTimestamp(0, 5, &writeTimestamp);
+  ASSERT_OK(Put("foo", "v4", wopts));
+  ASSERT_OK(Put("bar", "v7", wopts));
+
+  ReadOptions ropts;
+  std::string readTimestamp;
+  EncodeTimestamp(0, 4, &readTimestamp);
+  rocksdb::Slice readTimestampSlice =
+      Slice(readTimestamp.data(), readTimestamp.size());
+  ropts.timestamp = &readTimestampSlice;
+
+  std::unique_ptr<Iterator> iter(db_->NewIterator(ropts));
+
+  // Seek
+  // The latest value of "foo"  is "v3"
+  iter->Seek("foo");
+  ASSERT_TRUE(iter->Valid());
+  ASSERT_OK(iter->status());
+  rocksdb::Slice iterKey = iter->key();
+  ASSERT_EQ("foo", iterKey);
+  ASSERT_EQ("v3", iter->value());
+  // "bar" is not visible to the iterator. It will move on to the next key
+  // "foo".
+
+
+  iter->Seek("bar");
+  ASSERT_TRUE(iter->Valid());
+  ASSERT_OK(iter->status());
+  iterKey = iter->key();
+  ASSERT_EQ("foo", iterKey);
+  ASSERT_EQ("v3", iter->value());
+
+  // Next
+  // Seek to "a"
+  iter->Seek("a");
+  ASSERT_TRUE(iter->Valid());
+  ASSERT_OK(iter->status());
+  ASSERT_EQ("va", iter->value());
+  // "bar" is not visible to the iterator. It will move on to the next key
+  // "foo".
+  iter->Next();
+  ASSERT_TRUE(iter->Valid());
+  ASSERT_OK(iter->status());
+  iterKey = iter->key();
+  ASSERT_EQ("foo", iterKey);
+  ASSERT_EQ("v3", iter->value());
+
+  // Prev
+  // Seek to "z"
+  iter->Seek("z");
+  ASSERT_TRUE(iter->Valid());
+  ASSERT_OK(iter->status());
+  ASSERT_EQ("vz", iter->value());
+  // The previous key is "foo", which is visible to the iterator.
+  iter->Prev();
+  ASSERT_TRUE(iter->Valid());
+  ASSERT_OK(iter->status());
+  iterKey = iter->key();
+  ASSERT_EQ("foo", iterKey);
+  auto value = iter->value();
+  ASSERT_EQ("v3", value);
+  // "bar" is not visible to the iterator. It will move on to the next key "a".
+  iter->Prev();  // skipping "bar"
+  ASSERT_TRUE(iter->Valid());
+  ASSERT_OK(iter->status());
+  iterKey = iter->key();
+  ASSERT_EQ("a", iterKey);
+  ASSERT_EQ("va", iter->value());
+
+  // SeekForPrev
+  // The previous key is "foo", which is visible to the iterator.
+  iter->SeekForPrev("y");
+  ASSERT_TRUE(iter->Valid());
+  ASSERT_OK(iter->status());
+  iterKey = iter->key();
+  ASSERT_EQ("foo", iterKey);
+  ASSERT_EQ("v3", iter->value());
+  // "bar" is not visible to the iterator. It will move on to the next key "a".
+  iter->SeekForPrev("bar");
+  ASSERT_TRUE(iter->Valid());
+  ASSERT_OK(iter->status());
+  iterKey = iter->key();
+  ASSERT_EQ("a", iterKey);
+  ASSERT_EQ("va", iter->value());
+
+  // Prev beyond max_sequential_skip_in_iterations
+  uint64_t num_versions =
+      CurrentOptions().max_sequential_skip_in_iterations + 10;
+  for (uint64_t i = 0; i < num_versions; i++) {
+    EncodeTimestamp(0, 6 + i, &writeTimestamp);
+    ASSERT_OK(Put("bar", ToString(i), wopts));
+  }
+
+  EncodeTimestamp(0, 50, &writeTimestamp);
+  ASSERT_OK(Put("bar", "v8", wopts));
+
+  // The iterator is suppose to see data before seq3.
+  EncodeTimestamp(0, 49, &readTimestamp);
+  iter.reset(dbfull()->NewIterator(ropts));
+  // Seek to "z", which is visible.
+  iter->Seek("z");
+  ASSERT_TRUE(iter->Valid());
+  ASSERT_OK(iter->status());
+  ASSERT_EQ("vz", iter->value());
+  // Previous key is "foo" and the last value "v4" is visible.
+  iter->Prev();
+  ASSERT_TRUE(iter->Valid());
+  ASSERT_OK(iter->status());
+  iterKey = iter->key();
+  ASSERT_EQ("foo", iterKey);
+  ASSERT_EQ("v4", iter->value());
+  // Since the number of values of "bar" is more than
+  // max_sequential_skip_in_iterations, Prev() will ultimately fallback to
+  // seek in forward direction. Here we test the fallback seek is correct.
+  // The last visible value should be (num_versions - 1), as "v8" is not
+  // visible.
+  iter->Prev();
+  ASSERT_TRUE(iter->Valid());
+  ASSERT_OK(iter->status());
+  iterKey = iter->key();
+  ASSERT_EQ("bar", iterKey);
+  value = iter->value();
+  ASSERT_EQ(ToString(num_versions - 1), iter->value());
+
+  EncodeTimestamp(UINT64_MAX, UINT64_MAX, &readTimestamp);
+  iter.reset(dbfull()->NewIterator(ropts));
+  iter->Seek("fo");
+  ASSERT_TRUE(iter->Valid());
+  ASSERT_EQ("foo", iter->key());
+  ASSERT_EQ("v4", iter->value());
+}
+
+TEST_F(DBIteratorWithTimestampTest, IterWithSnapshot) {
+  anon::OptionsOverride options_override;
+  options_override.skip_policy = kSkipNoSnapshot;
+  Options options = CurrentOptions(options_override);
+  std::string tmp;
+  EncodeTimestamp(0, 0, &tmp);
+  size_t ts_sz = tmp.size();
+  TestComparator test_cmp(ts_sz);
+  options.comparator = &test_cmp;
+
+  Reopen(options);
+
+  std::string writeTimestamp;
+  EncodeTimestamp(0, 0, &writeTimestamp);
+  rocksdb::Slice writeTimestampSlice =
+      Slice(writeTimestamp.data(), writeTimestamp.size());
+  WriteOptions wopts;
+  wopts.timestamp = &writeTimestampSlice;
+
+  EncodeTimestamp(UINT64_MAX - 1, UINT64_MAX - 1, &writeTimestamp);
+
+  ASSERT_OK(Put("key1", "val1", wopts));
+  ASSERT_OK(Put("key2", "val2", wopts));
+  ASSERT_OK(Put("key3", "val3", wopts));
+  ASSERT_OK(Put("key4", "val4", wopts));
+  ASSERT_OK(Put("key5", "val5", wopts));
+
+  std::string readTimestamp;
+  EncodeTimestamp(UINT64_MAX, UINT64_MAX, &readTimestamp);
+  rocksdb::Slice readTimestampSlice =
+      Slice(readTimestamp.data(), readTimestamp.size());
+
+  const Snapshot* snapshot = db_->GetSnapshot();
+  ReadOptions ropts;
+  ropts.snapshot = snapshot;
+  ropts.timestamp = &readTimestampSlice;
+  std::unique_ptr<Iterator> iter(db_->NewIterator(ropts));
+
+  ASSERT_OK(Put("key0", "val0", wopts));
+  // Put more values after the snapshot
+  ASSERT_OK(Put("key100", "val100", wopts));
+  ASSERT_OK(Put("key101", "val101", wopts));
+
+  iter->Seek("key5");
+  ASSERT_EQ(IterStatus(iter.get()), std::string("key5->val5"));
+  if (!CurrentOptions().merge_operator) {
+    // TODO: merge operator does not support backward iteration yet
+    if (kPlainTableAllBytesPrefix != option_config_ &&
+        kBlockBasedTableWithWholeKeyHashIndex != option_config_ &&
+        kHashLinkList != option_config_ && kHashSkipList != option_config_) {
+      iter->Prev();
+      ASSERT_EQ(IterStatus(iter.get()), std::string("key4->val4"));
+      iter->Prev();
+      ASSERT_EQ(IterStatus(iter.get()), std::string("key3->val3"));
+
+      iter->Next();
+      ASSERT_EQ(IterStatus(iter.get()), std::string("key4->val4"));
+      iter->Next();
+      ASSERT_EQ(IterStatus(iter.get()), std::string("key5->val5"));
+    }
+    iter->Next();
+    ASSERT_TRUE(!iter->Valid());
+  }
+
+  if (!CurrentOptions().merge_operator) {
+    // TODO(gzh): merge operator does not support backward iteration yet
+    if (kPlainTableAllBytesPrefix != option_config_ &&
+        kBlockBasedTableWithWholeKeyHashIndex != option_config_ &&
+        kHashLinkList != option_config_ && kHashSkipList != option_config_) {
+      iter->SeekForPrev("key1");
+      // there is nothing before this key
+      ASSERT_TRUE(!iter->Valid());
+      iter->SeekToFirst();
+      ASSERT_EQ(IterStatus(iter.get()), "key1->val1");
+      iter->Next();
+      ASSERT_EQ(IterStatus(iter.get()), "key2->val2");
+      iter->Next();
+      ASSERT_EQ(IterStatus(iter.get()), "key3->val3");
+      iter->Prev();
+      ASSERT_EQ(IterStatus(iter.get()), "key2->val2");
+      iter->Prev();
+      ASSERT_EQ(IterStatus(iter.get()), "key1->val1");
+      iter->Prev();
+      ASSERT_TRUE(!iter->Valid());
+    }
+  }
+
+  iter->SeekToLast();
+  ASSERT_EQ(IterStatus(iter.get()), std::string("key5->val5"));
+
+  db_->DeleteRange(WriteOptions(),
+                   rocksdb::Slice("key5\xFE\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFE\xFF"
+                                  "\xFF\xFF\xFF\xFF\xFF\xFF"),
+                   rocksdb::Slice("key6\xFE\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFE\xFF"
+                                  "\xFF\xFF\xFF\xFF\xFF\xFF"));
+  ropts.snapshot = nullptr;
+  iter.reset(dbfull()->NewIterator(ropts));
+
+  iter->SeekToLast();
+  ASSERT_EQ(IterStatus(iter.get()), std::string("key4->val4"));
+
+  db_->ReleaseSnapshot(snapshot);
+}
+
+TEST_F(DBIteratorWithTimestampTest, TimestampDelete) {
+  Options options = CurrentOptions();
+  std::string tmp;
+  EncodeTimestamp(0, 0, &tmp);
+  size_t ts_sz = tmp.size();
+  TestComparator test_cmp(ts_sz);
+  options.comparator = &test_cmp;
+  Reopen(options);
+
+  std::string writeTimestamp;
+  EncodeTimestamp(0, 0, &writeTimestamp);
+  rocksdb::Slice writeTimestampSlice =
+      Slice(writeTimestamp.data(), writeTimestamp.size());
+  WriteOptions wopts;
+  wopts.timestamp = &writeTimestampSlice;
+
+  EncodeTimestamp(0, 1, &writeTimestamp);
+  ASSERT_OK(Put("foo", "v1", wopts));
+  EncodeTimestamp(0, 2, &writeTimestamp);
+  ASSERT_OK(Put("foo", "v2", wopts));
+  EncodeTimestamp(0, 3, &writeTimestamp);
+  ASSERT_OK(db_->Delete(wopts, "foo"));
+
+  ReadOptions ropts;
+  std::string readTimestamp;
+  EncodeTimestamp(0, 2, &readTimestamp);
+  rocksdb::Slice readTimestampSlice =
+      Slice(readTimestamp.data(), readTimestamp.size());
+  ropts.timestamp = &readTimestampSlice;
+
+  {
+    Iterator* iter = dbfull()->NewIterator(ropts);
+    int count = 0;
+    for (iter->Seek("foo"); iter->Valid(); iter->Next()) {
+      ASSERT_OK(iter->status());
+      count++;
+    }
+    ASSERT_EQ(count, 1);
+    delete iter;
+  }
+
+  EncodeTimestamp(0, 3, &readTimestamp);
+
+  {
+    Iterator* iter = dbfull()->NewIterator(ropts);
+    int count = 0;
+    for (iter->Seek("foo"); iter->Valid(); iter->Next()) {
+      ASSERT_OK(iter->status());
+      count++;
+    }
+    ASSERT_EQ(count, 0);
+    delete iter;
+  }
+}
+
+}  // namespace rocksdb
 
 int main(int argc, char** argv) {
   ROCKSDB_NAMESPACE::port::InstallStackTraceHandler();

@@ -275,7 +275,7 @@ bool DBIter::FindNextUserEntryInternal(bool skipping_saved_key,
             // 2) return ikey only if ikey.seqnum >= start_seqnum_
             // note that if deletion seqnum is < start_seqnum_ we
             // just skip it like in normal iterator.
-            if (start_seqnum_ > 0 && ikey_.sequence >= start_seqnum_)  {
+            if (start_seqnum_ > 0 && ikey_.sequence >= start_seqnum_) {
               saved_key_.SetInternalKey(ikey_);
               valid_ = true;
               return true;
@@ -548,13 +548,6 @@ bool DBIter::MergeValuesNewToOld() {
 }
 
 void DBIter::Prev() {
-  if (timestamp_size_ > 0) {
-    valid_ = false;
-    status_ = Status::NotSupported(
-        "SeekToLast/SeekForPrev/Prev currently not supported with timestamp.");
-    return;
-  }
-
   assert(valid_);
   assert(status_.ok());
 
@@ -593,8 +586,8 @@ bool DBIter::ReverseToForward() {
   // If that's the case, seek iter_ to current key.
   if (!expect_total_order_inner_iter() || !iter_.Valid()) {
     IterKey last_key;
-    last_key.SetInternalKey(ParsedInternalKey(
-        saved_key_.GetUserKey(), kMaxSequenceNumber, kValueTypeForSeek));
+    last_key.SetInternalKey(saved_key_.GetUserKey(), kMaxSequenceNumber,
+                            kValueTypeForSeek, timestamp_ub_);
     iter_.Seek(last_key.GetInternalKey());
   }
 
@@ -632,8 +625,8 @@ bool DBIter::ReverseToBackward() {
     // Using kMaxSequenceNumber and kValueTypeForSeek
     // (not kValueTypeForSeekForPrev) to seek to a key strictly smaller
     // than saved_key_.
-    last_key.SetInternalKey(ParsedInternalKey(
-        saved_key_.GetUserKey(), kMaxSequenceNumber, kValueTypeForSeek));
+    last_key.SetInternalKey(saved_key_.GetUserKey(), kMaxSequenceNumber,
+                            kValueTypeForSeek, timestamp_ub_);
     if (!expect_total_order_inner_iter()) {
       iter_.SeekForPrev(last_key.GetInternalKey());
     } else {
@@ -740,7 +733,8 @@ bool DBIter::FindValueForCurrentKey() {
                  timestamp_size_);
     }
     if (!IsVisible(ikey.sequence, ts) ||
-        !user_comparator_.Equal(ikey.user_key, saved_key_.GetUserKey())) {
+        user_comparator_.CompareWithoutTimestamp(
+            ikey.user_key, saved_key_.GetUserKey()) != 0) {
       break;
     }
     if (TooManyInternalKeysSkipped()) {
@@ -877,8 +871,21 @@ bool DBIter::FindValueForCurrentKeyUsingSeek() {
   // FindValueForCurrentKeyUsingSeek()
   assert(pinned_iters_mgr_.PinningEnabled());
   std::string last_key;
-  AppendInternalKey(&last_key, ParsedInternalKey(saved_key_.GetUserKey(),
-                                                 sequence_, kValueTypeForSeek));
+  if (timestamp_size_ == 0) {
+    AppendInternalKey(&last_key,
+                      ParsedInternalKey(saved_key_.GetUserKey(), sequence_,
+                                        kValueTypeForSeek));
+  } else {
+    AppendInternalKeyWithDifferentTimestamp(
+        &last_key,
+        ParsedInternalKey(saved_key_.GetUserKey(), sequence_,
+                          kValueTypeForSeek),
+        *timestamp_ub_);
+    // auto key = saved_key_.GetUserKey();
+    // last_key.append(key.data(), key.size() - timestamp_size_);
+    // last_key.append(timestamp_ub_->data(), timestamp_ub_->size());
+    // PutFixed64(&last_key, PackSequenceAndType(sequence_, kValueTypeForSeek));
+  }
   iter_.Seek(last_key);
   RecordTick(statistics_, NUMBER_OF_RESEEKS_IN_ITERATION);
 
@@ -1065,8 +1072,8 @@ bool DBIter::FindUserKeyBeforeSavedKey() {
     if (num_skipped >= max_skip_) {
       num_skipped = 0;
       IterKey last_key;
-      last_key.SetInternalKey(ParsedInternalKey(
-          saved_key_.GetUserKey(), kMaxSequenceNumber, kValueTypeForSeek));
+      last_key.SetInternalKey(saved_key_.GetUserKey(), kMaxSequenceNumber,
+                              kValueTypeForSeek, timestamp_ub_);
       // It would be more efficient to use SeekForPrev() here, but some
       // iterators may not support it.
       iter_.Seek(last_key.GetInternalKey());
@@ -1139,7 +1146,7 @@ void DBIter::SetSavedKeyToSeekForPrevTarget(const Slice& target) {
   saved_key_.Clear();
   // now saved_key is used to store internal key.
   saved_key_.SetInternalKey(target, 0 /* sequence_number */,
-                            kValueTypeForSeekForPrev);
+                            kValueTypeForSeekForPrev, timestamp_ub_);
 
   if (iterate_upper_bound_ != nullptr &&
       user_comparator_.Compare(saved_key_.GetUserKey(),
@@ -1219,13 +1226,6 @@ void DBIter::SeekForPrev(const Slice& target) {
     db_impl_->TraceIteratorSeekForPrev(cfd_->GetID(), target);
   }
 #endif  // ROCKSDB_LITE
-
-  if (timestamp_size_ > 0) {
-    valid_ = false;
-    status_ = Status::NotSupported(
-        "SeekToLast/SeekForPrev/Prev currently not supported with timestamp.");
-    return;
-  }
 
   status_ = Status::OK();
   ReleaseTempPinnedData();
@@ -1320,13 +1320,6 @@ void DBIter::SeekToFirst() {
 }
 
 void DBIter::SeekToLast() {
-  if (timestamp_size_ > 0) {
-    valid_ = false;
-    status_ = Status::NotSupported(
-        "SeekToLast/SeekForPrev/Prev currently not supported with timestamp.");
-    return;
-  }
-
   if (iterate_upper_bound_ != nullptr) {
     // Seek to last key strictly less than ReadOptions.iterate_upper_bound.
     SeekForPrev(*iterate_upper_bound_);
