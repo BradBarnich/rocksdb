@@ -97,7 +97,7 @@ class WriteBatchWithIndex : public WriteBatchBase {
   explicit WriteBatchWithIndex(
       const Comparator* backup_index_comparator = BytewiseComparator(),
       size_t reserved_bytes = 0, bool overwrite_key = false,
-      size_t max_bytes = 0);
+      size_t max_bytes = 0, size_t ts_sz = 0);
 
   ~WriteBatchWithIndex() override;
   WriteBatchWithIndex(WriteBatchWithIndex&&);

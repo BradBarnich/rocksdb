@@ -1807,8 +1807,27 @@ Status DB::Put(const WriteOptions& opt, ColumnFamilyHandle* column_family,
 
 Status DB::Delete(const WriteOptions& opt, ColumnFamilyHandle* column_family,
                   const Slice& key) {
-  WriteBatch batch;
-  batch.Delete(column_family, key);
+  if (column_family->GetComparator()->timestamp_size() == 0) {
+    WriteBatch batch(key.size() + 24);
+    Status s = batch.Delete(column_family, key);
+    if (!s.ok()) {
+      return s;
+    }
+    return Write(opt, &batch);
+  }
+
+  const Slice* ts = opt.timestamp;
+  assert(nullptr != ts);
+  size_t ts_sz = ts->size();
+  WriteBatch batch(key.size() + ts_sz + 24, /*max_bytes=*/0, ts_sz);
+  Status s = batch.Delete(column_family, key);
+  if (!s.ok()) {
+    return s;
+  }
+  s = batch.AssignTimestamp(*ts);
+  if (!s.ok()) {
+    return s;
+  }
   return Write(opt, &batch);
 }
 
@@ -1823,6 +1842,8 @@ Status DB::DeleteRange(const WriteOptions& opt,
                        ColumnFamilyHandle* column_family,
                        const Slice& begin_key, const Slice& end_key) {
   WriteBatch batch;
+  // auto ts_sz = column_family->GetComparator()->timestamp_size();
+  // WriteBatch batch(begin_key.size() + end_key.size() + 2*ts_sz + 24, /*max_bytes=*/0, ts_sz);
   batch.DeleteRange(column_family, begin_key, end_key);
   return Write(opt, &batch);
 }

@@ -145,9 +145,9 @@ int WriteBatchEntryComparator::CompareKey(uint32_t column_family,
                                           const Slice& key2) const {
   if (column_family < cf_comparators_.size() &&
       cf_comparators_[column_family] != nullptr) {
-    return cf_comparators_[column_family]->Compare(key1, key2);
+    return cf_comparators_[column_family]->CompareWithoutTimestamp(key1, key2);
   } else {
-    return default_comparator_->Compare(key1, key2);
+    return default_comparator_->CompareWithoutTimestamp(key1, key2);
   }
 }
 

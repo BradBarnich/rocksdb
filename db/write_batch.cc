@@ -908,7 +908,14 @@ Status WriteBatchInternal::Delete(WriteBatch* b, uint32_t column_family_id,
     b->rep_.push_back(static_cast<char>(kTypeColumnFamilyDeletion));
     PutVarint32(&b->rep_, column_family_id);
   }
-  PutLengthPrefixedSlice(&b->rep_, key);
+  if (0 == b->timestamp_size_) {
+    PutLengthPrefixedSlice(&b->rep_, key);
+  } else {
+    PutVarint32(&b->rep_,
+                static_cast<uint32_t>(key.size() + b->timestamp_size_));
+    b->rep_.append(key.data(), key.size());
+    b->rep_.append(b->timestamp_size_, '\0');
+  }
   b->content_flags_.store(b->content_flags_.load(std::memory_order_relaxed) |
                               ContentFlags::HAS_DELETE,
                           std::memory_order_relaxed);
@@ -930,7 +937,11 @@ Status WriteBatchInternal::Delete(WriteBatch* b, uint32_t column_family_id,
     b->rep_.push_back(static_cast<char>(kTypeColumnFamilyDeletion));
     PutVarint32(&b->rep_, column_family_id);
   }
-  PutLengthPrefixedSliceParts(&b->rep_, key);
+  if (0 == b->timestamp_size_) {
+    PutLengthPrefixedSliceParts(&b->rep_, key);
+  } else {
+    PutLengthPrefixedSlicePartsWithPadding(&b->rep_, key, b->timestamp_size_);
+  }
   b->content_flags_.store(b->content_flags_.load(std::memory_order_relaxed) |
                               ContentFlags::HAS_DELETE,
                           std::memory_order_relaxed);
@@ -954,7 +965,14 @@ Status WriteBatchInternal::SingleDelete(WriteBatch* b,
     b->rep_.push_back(static_cast<char>(kTypeColumnFamilySingleDeletion));
     PutVarint32(&b->rep_, column_family_id);
   }
-  PutLengthPrefixedSlice(&b->rep_, key);
+  if (0 == b->timestamp_size_) {
+    PutLengthPrefixedSlice(&b->rep_, key);
+  } else {
+    PutVarint32(&b->rep_,
+                static_cast<uint32_t>(key.size() + b->timestamp_size_));
+    b->rep_.append(key.data(), key.size());
+    b->rep_.append(b->timestamp_size_, '\0');
+  }
   b->content_flags_.store(b->content_flags_.load(std::memory_order_relaxed) |
                               ContentFlags::HAS_SINGLE_DELETE,
                           std::memory_order_relaxed);
@@ -978,7 +996,11 @@ Status WriteBatchInternal::SingleDelete(WriteBatch* b,
     b->rep_.push_back(static_cast<char>(kTypeColumnFamilySingleDeletion));
     PutVarint32(&b->rep_, column_family_id);
   }
-  PutLengthPrefixedSliceParts(&b->rep_, key);
+  if (0 == b->timestamp_size_) {
+    PutLengthPrefixedSliceParts(&b->rep_, key);
+  } else {
+    PutLengthPrefixedSlicePartsWithPadding(&b->rep_, key, b->timestamp_size_);
+  }
   b->content_flags_.store(b->content_flags_.load(std::memory_order_relaxed) |
                               ContentFlags::HAS_SINGLE_DELETE,
                           std::memory_order_relaxed);
@@ -1002,8 +1024,20 @@ Status WriteBatchInternal::DeleteRange(WriteBatch* b, uint32_t column_family_id,
     b->rep_.push_back(static_cast<char>(kTypeColumnFamilyRangeDeletion));
     PutVarint32(&b->rep_, column_family_id);
   }
-  PutLengthPrefixedSlice(&b->rep_, begin_key);
-  PutLengthPrefixedSlice(&b->rep_, end_key);
+
+  if (0 == b->timestamp_size_) {
+    PutLengthPrefixedSlice(&b->rep_, begin_key);
+    PutLengthPrefixedSlice(&b->rep_, end_key);
+  } else {
+    PutVarint32(&b->rep_,
+                static_cast<uint32_t>(begin_key.size() + b->timestamp_size_));
+    b->rep_.append(begin_key.data(), begin_key.size());
+    b->rep_.append(b->timestamp_size_, '\0');
+    PutVarint32(&b->rep_,
+                static_cast<uint32_t>(end_key.size() + b->timestamp_size_));
+    b->rep_.append(end_key.data(), end_key.size());
+    b->rep_.append(b->timestamp_size_, '\0');
+  }
   b->content_flags_.store(b->content_flags_.load(std::memory_order_relaxed) |
                               ContentFlags::HAS_DELETE_RANGE,
                           std::memory_order_relaxed);
@@ -1027,8 +1061,15 @@ Status WriteBatchInternal::DeleteRange(WriteBatch* b, uint32_t column_family_id,
     b->rep_.push_back(static_cast<char>(kTypeColumnFamilyRangeDeletion));
     PutVarint32(&b->rep_, column_family_id);
   }
-  PutLengthPrefixedSliceParts(&b->rep_, begin_key);
-  PutLengthPrefixedSliceParts(&b->rep_, end_key);
+  if (0 == b->timestamp_size_) {
+    PutLengthPrefixedSliceParts(&b->rep_, begin_key);
+    PutLengthPrefixedSliceParts(&b->rep_, end_key);
+  } else {
+    PutLengthPrefixedSlicePartsWithPadding(&b->rep_, begin_key,
+                                           b->timestamp_size_);
+    PutLengthPrefixedSlicePartsWithPadding(&b->rep_, end_key,
+                                           b->timestamp_size_);
+  }
   b->content_flags_.store(b->content_flags_.load(std::memory_order_relaxed) |
                               ContentFlags::HAS_DELETE_RANGE,
                           std::memory_order_relaxed);
@@ -1059,7 +1100,14 @@ Status WriteBatchInternal::Merge(WriteBatch* b, uint32_t column_family_id,
     b->rep_.push_back(static_cast<char>(kTypeColumnFamilyMerge));
     PutVarint32(&b->rep_, column_family_id);
   }
-  PutLengthPrefixedSlice(&b->rep_, key);
+  if (0 == b->timestamp_size_) {
+    PutLengthPrefixedSlice(&b->rep_, key);
+  } else {
+    PutVarint32(&b->rep_,
+                static_cast<uint32_t>(key.size() + b->timestamp_size_));
+    b->rep_.append(key.data(), key.size());
+    b->rep_.append(b->timestamp_size_, '\0');
+  }
   PutLengthPrefixedSlice(&b->rep_, value);
   b->content_flags_.store(b->content_flags_.load(std::memory_order_relaxed) |
                               ContentFlags::HAS_MERGE,
@@ -1089,7 +1137,11 @@ Status WriteBatchInternal::Merge(WriteBatch* b, uint32_t column_family_id,
     b->rep_.push_back(static_cast<char>(kTypeColumnFamilyMerge));
     PutVarint32(&b->rep_, column_family_id);
   }
-  PutLengthPrefixedSliceParts(&b->rep_, key);
+  if (0 == b->timestamp_size_) {
+    PutLengthPrefixedSliceParts(&b->rep_, key);
+  } else {
+    PutLengthPrefixedSlicePartsWithPadding(&b->rep_, key, b->timestamp_size_);
+  }
   PutLengthPrefixedSliceParts(&b->rep_, value);
   b->content_flags_.store(b->content_flags_.load(std::memory_order_relaxed) |
                               ContentFlags::HAS_MERGE,

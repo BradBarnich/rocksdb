@@ -145,6 +145,17 @@ void DumpSupportInfo(Logger* logger) {
 }
 }  // namespace
 
+class SnapshotReadCallback : public ReadCallback {
+ public:
+  SnapshotReadCallback(SequenceNumber snapshot) : ReadCallback(snapshot) {}
+
+  // Will be called to see if the seq number visible; if not it moves on to
+  // the next seq number.
+  inline virtual bool IsVisibleFullCheck(SequenceNumber seq) override {
+    return seq <= max_visible_seq_;
+  }
+};
+
 DBImpl::DBImpl(const DBOptions& options, const std::string& dbname,
                const bool seq_per_batch, const bool batch_per_txn)
     : dbname_(dbname),
@@ -1538,6 +1549,7 @@ Status DBImpl::GetImpl(const ReadOptions& read_options, const Slice& key,
   TEST_SYNC_POINT("DBImpl::GetImpl:2");
 
   SequenceNumber snapshot;
+  std::unique_ptr<ReadCallback> callback;
   if (read_options.snapshot != nullptr) {
     if (get_impl_options.callback) {
       // Already calculated based on read_options.snapshot
@@ -1545,6 +1557,13 @@ Status DBImpl::GetImpl(const ReadOptions& read_options, const Slice& key,
     } else {
       snapshot =
           reinterpret_cast<const SnapshotImpl*>(read_options.snapshot)->number_;
+
+      if (cfd->user_comparator()->timestamp_size() > 0) {
+        // Seek might not skip sequence numbers when the timestamps between
+        // the stored and the seek key are different, so we need a callback.
+        callback.reset(new SnapshotReadCallback(snapshot));
+        get_impl_options.callback = callback.get();
+      }
     }
   } else {
     // Note that the snapshot is assigned AFTER referencing the super
